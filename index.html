@@ -221,6 +221,8 @@ label.add{display:block;text-align:center}
 .gitem .fld{margin:0 0 8px}
 .hint{font-size:12.5px;color:var(--muted);margin:6px 0 0;line-height:1.55}
 
+.fb-wait #app{opacity:0}
+.fb-wait::after{content:"";position:fixed;left:50%;top:50%;width:30px;height:30px;margin:-15px 0 0 -15px;border-radius:50%;border:2px solid var(--line);border-top-color:var(--accent);animation:spin .8s linear infinite}
 /* ---------- Toolbar ---------- */
 .dock{position:fixed;right:max(16px,env(safe-area-inset-right,0px));bottom:calc(16px + env(safe-area-inset-bottom,0px));z-index:40;
   display:flex;gap:4px;padding:5px;background:color-mix(in oklab,var(--surface) 86%,transparent);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
@@ -353,7 +355,7 @@ let saved=published;
 let data=clone(saved);
 const inRuntime=!!(window.claude&&window.claude.use);
 let editing=false, canEdit=false, artifactApi=null, downloadsApi=null, readOnly=false;
-const openKeys=new Set([...(!(window.claude&&window.claude.use)?['github']:[]),'profile']);
+const openKeys=new Set([...(!(window.claude&&window.claude.use)?['firebase']:[]),'profile']);
 const TYPES={text:'ข้อความ',timeline:'ไทม์ไลน์',projects:'ผลงาน',skills:'ทักษะ',gallery:'แกลเลอรีรูป'};
 const FIELDS={
   timeline:[['title','ตำแหน่ง / หัวข้อ'],['org','องค์กร / สถาบัน'],['period','ช่วงเวลา'],['place','สถานที่'],['body','รายละเอียด (ขึ้นบรรทัดใหม่ได้)','ta']],
@@ -603,6 +605,7 @@ function renderEditor(){
     <div class="fld"><span>รูปโปรไฟล์</span><div class="ph">${data.profile.photo?`<img src="${esc(data.profile.photo)}" alt="">`:''}
       <label class="ibtn" style="display:inline-block">เลือกรูป<input type="file" accept="image/*" id="photo-in" hidden></label>
       ${data.profile.photo?'<button class="ibtn danger" data-act="photo-del">ลบรูป</button>':''}</div></div>`);
+  h+=fbGroup();
   h+=ghGroup();
   h+=grp('contact','ข้อมูลติดต่อ','',`${fld('เบอร์โทรศัพท์','profile.phone')}${fld('LINE ID (เช่น myname หรือ @shopname)','profile.line')}${fld('อีเมล','profile.email')}${fld('ที่อยู่','profile.address','ta')}<p class="hint">ช่องที่เว้นว่างจะไม่แสดงบนหน้าเว็บ ที่อยู่จะกดเปิด Google Maps ได้</p>`);
   h+=grp('links','ลิงก์โซเชียล',`<span class="kind">${data.links.length}</span>`,
@@ -700,6 +703,7 @@ document.addEventListener('click',async e=>{
 function focusLast(){requestAnimationFrame(()=>{const items=drBody().querySelectorAll('details[open] .item');const it=items[items.length-1];it?.scrollIntoView({behavior:reduce?'auto':'smooth',block:'center'});it?.querySelector('input')?.focus({preventScroll:true})})}
 async function uploadImage(file){
   const c=data.settings.cloudinary||{};
+  if(fbActive()&&!(c.cloud&&c.preset))throw new Error('โหมด Firebase ต้องตั้งค่า Cloudinary ก่อนอัปโหลดรูปกิจกรรม');
   if(!inRuntime&&c.cloud&&c.preset){
     const fd=new FormData();fd.append('file',file);fd.append('upload_preset',c.preset);if(c.folder)fd.append('folder',c.folder);
     const r=await fetch(`https://api.cloudinary.com/v1_1/${encodeURIComponent(c.cloud.trim())}/image/upload`,{method:'POST',body:fd});
@@ -720,6 +724,7 @@ function resize(file,max){return new Promise((res,rej)=>{const r=new FileReader(
   c.getContext('2d').drawImage(img,0,0,c.width,c.height);res(c.toDataURL('image/jpeg',.84))};img.src=r.result};r.readAsDataURL(file)})}
 function normalize(j){
   j.settings={...(j.settings||{})};j.settings.github={owner:'',repo:'',branch:'main',path:'',...(j.settings.github||{})};
+  j.settings.firebase={apiKey:'',authDomain:'',projectId:'',appId:'',collection:'portfolios',doc:'main',...(j.settings.firebase||{})};
   if(!inRuntime){const d=ghDefaults(),g=j.settings.github;for(const k of ['owner','repo','path'])if(!g[k]&&d[k])g[k]=d[k]}
   j.profile={name:'',role:'',intro:'',location:'',email:'',phone:'',line:'',address:'',availability:'',photo:'',...j.profile};
   j.settings={...(j.settings||{})};j.settings.cloudinary={cloud:'',preset:'',folder:'portfolio',...(j.settings.cloudinary||{})};
@@ -727,6 +732,91 @@ function normalize(j){
   j.sections=j.sections.filter(s=>TYPES[s.type]).map((s,i)=>({id:s.id||('s'+i+Date.now().toString(36)),title:'',hidden:false,body:'',items:[],...s}));
   return j;
 }
+
+
+/* ---------- Firebase (Firestore) storage for own hosting ---------- */
+const FB_VER='10.14.1';
+const EMBED_SETTINGS=(()=>{try{return JSON.parse(DATA_EL.textContent).settings||{}}catch(e){return {}}})();
+const FB_CFG={apiKey:'',authDomain:'',projectId:'',appId:'',collection:'portfolios',doc:'main',...(EMBED_SETTINGS.firebase||{})};
+const fbOn=()=>!inRuntime&&!!(FB_CFG.apiKey&&FB_CFG.projectId);
+const FB_KEYS=['apiKey','authDomain','projectId','appId','collection','doc'];
+const fbSameCfg=()=>{const c=data.settings?.firebase||{};return FB_KEYS.every(k=>String(c[k]||'')===String(FB_CFG[k]||''))};
+const fbActive=()=>fbOn()&&fbSameCfg();
+let fbStatus='', fbx=null, fbUserInfo=null;
+function fbMsg(e){const c=e?.code||'';return ({'auth/popup-blocked':'เบราว์เซอร์บล็อกหน้าต่างเข้าสู่ระบบ อนุญาต popup แล้วลองใหม่','auth/popup-closed-by-user':'ปิดหน้าต่างเข้าสู่ระบบก่อนเสร็จ','auth/unauthorized-domain':'โดเมนนี้ยังไม่ได้เพิ่มใน Firebase → Authentication → Settings → Authorized domains','auth/operation-not-allowed':'ยังไม่ได้เปิด Google sign-in ใน Firebase → Authentication','permission-denied':'ไม่มีสิทธิ์ ตรวจสอบ Firestore rules'})[c]||e?.message||'เกิดข้อผิดพลาด'}
+async function fbRead(){
+  const c=FB_CFG,ctl=new AbortController(),t=setTimeout(()=>ctl.abort(),6000);
+  try{
+    const r=await fetch(`https://firestore.googleapis.com/v1/projects/${encodeURIComponent(c.projectId)}/databases/(default)/documents/${encodeURIComponent(c.collection||'portfolios')}/${encodeURIComponent(c.doc||'main')}?key=${encodeURIComponent(c.apiKey)}`,{signal:ctl.signal,cache:'no-store'});
+    if(r.status===404)return null;
+    if(!r.ok)throw new Error(r.status===403?'อ่านข้อมูลไม่ได้ ตรวจสอบ Firestore rules ให้อ่านได้สาธารณะ':'Firestore '+r.status);
+    const j=await r.json();const str=j.fields?.data?.stringValue;return str?JSON.parse(str):null;
+  }finally{clearTimeout(t)}
+}
+async function fbLoad(){
+  if(fbx)return fbx;
+  const b=`https://www.gstatic.com/firebasejs/${FB_VER}/`;
+  const [A,Au,F]=await Promise.all([import(b+'firebase-app.js'),import(b+'firebase-auth.js'),import(b+'firebase-firestore.js')]);
+  const app=A.initializeApp({apiKey:FB_CFG.apiKey,authDomain:FB_CFG.authDomain||`${FB_CFG.projectId}.firebaseapp.com`,projectId:FB_CFG.projectId,...(FB_CFG.appId?{appId:FB_CFG.appId}:{})});
+  const auth=Au.getAuth(app);if(auth.authStateReady)await auth.authStateReady();
+  fbx={Au,F,auth,db:F.getFirestore(app)};
+  if(auth.currentUser)fbUserInfo={email:auth.currentUser.email,uid:auth.currentUser.uid};
+  return fbx;
+}
+async function fbSignIn(){
+  const x=await fbLoad();
+  if(!x.auth.currentUser){const r=await x.Au.signInWithPopup(x.auth,new x.Au.GoogleAuthProvider());fbUserInfo={email:r.user.email,uid:r.user.uid}}
+  return x.auth.currentUser;
+}
+async function fbWrite(d){
+  const copy=clone(d);if(copy.settings){delete copy.settings.firebase;delete copy.settings.github}
+  const json=JSON.stringify(copy);
+  if(json.length>900000)throw new Error('ข้อมูลใหญ่เกิน 1MB (ขีดจำกัดของ Firestore) ย้ายรูปกิจกรรมไปไว้ที่ Cloudinary หรือใช้รูปโปรไฟล์ที่เล็กลง');
+  let u;try{u=await fbSignIn()}catch(e){throw new Error('เข้าสู่ระบบไม่สำเร็จ: '+fbMsg(e))}
+  try{await fbx.F.setDoc(fbx.F.doc(fbx.db,FB_CFG.collection||'portfolios',FB_CFG.doc||'main'),{data:json,updatedAt:fbx.F.serverTimestamp(),updatedBy:u.uid})}
+  catch(e){throw new Error(e?.code==='permission-denied'?`ไม่มีสิทธิ์เขียน ตรวจสอบว่า Firestore rules ใส่ UID ${u.uid} แล้ว`:'บันทึกไม่สำเร็จ: '+fbMsg(e))}
+}
+async function fbBoot(){
+  if(!fbOn())return;
+  document.body.classList.add('fb-wait');
+  try{
+    const remote=await fbRead();
+    if(remote){
+      remote.settings={...(remote.settings||{}),firebase:{...FB_CFG},github:{...(EMBED_SETTINGS.github||{})}};
+      saved=normalize(remote);data=clone(saved);fbStatus='ok';
+    }else fbStatus='empty';
+  }catch(e){fbStatus='error:'+(e.name==='AbortError'?'เชื่อมต่อ Firebase ไม่ทันเวลา':e.message);console.warn(e)}
+  document.body.classList.remove('fb-wait');
+}
+function fbRules(uid){const col=(data.settings.firebase.collection||'portfolios').replace(/[^\w-]/g,'');
+  return `rules_version = '2';\nservice cloud.firestore {\n  match /databases/{database}/documents {\n    match /${col}/{docId} {\n      allow read: if true;\n      allow write: if request.auth != null && request.auth.uid == "${uid||'ใส่_UID_ของคุณ'}";\n    }\n  }\n}`}
+function fbGroup(){
+  const f=data.settings.firebase;
+  let status;
+  if(inRuntime)status='<p class="hint">Firebase ใช้งานได้เมื่อวางไฟล์บนเว็บของคุณเอง ตั้งค่าที่นี่ได้ แล้วกด “ดาวน์โหลดไฟล์ HTML” ไปอัปโหลด</p>';
+  else if(!fbOn())status='<p class="hint">ยังไม่ได้เปิดใช้ วางค่า firebaseConfig ด้านล่าง แล้วอัปเดตไฟล์ HTML หนึ่งครั้ง (กดบันทึกถ้าตั้งค่า GitHub ไว้ หรือดาวน์โหลดไฟล์ HTML ไปอัปโหลดเอง)</p>';
+  else if(!fbSameCfg())status='<p class="hint" style="color:var(--accent)">ค่าที่แก้จะมีผลหลังอัปเดตไฟล์ HTML หนึ่งครั้ง ระหว่างนี้การกดบันทึกจะอัปเดตไฟล์แทน</p>';
+  else status=`<p class="hint">${fbStatus==='ok'?'✓ โหลดข้อมูลจาก Firebase แล้ว':fbStatus==='empty'?'เชื่อมต่อแล้ว ยังไม่มีข้อมูลบน Firebase กดบันทึกเพื่อย้ายข้อมูลขึ้นไปครั้งแรก':'⚠ '+esc(fbStatus.replace(/^error:/,''))}</p>
+    <div class="row" style="margin-top:8px">${fbUserInfo?`<span class="hint" style="margin:0">เข้าสู่ระบบ: ${esc(fbUserInfo.email||'')}</span><button class="ibtn" data-act="fb-rules">คัดลอก Rules พร้อม UID</button><button class="ibtn" data-act="fb-out">ออกจากระบบ</button>`:'<button class="ibtn" data-act="fb-in">เข้าสู่ระบบด้วย Google</button>'}</div>`;
+  const on=fbActive();
+  return grp('firebase','ฐานข้อมูล Firebase',on?'<span class="kind">ใช้งานอยู่</span>':'<span class="hid">ยังไม่เปิดใช้</span>',`${status}
+    <label class="fld"><span>วาง firebaseConfig ทั้งก้อน (จาก Project settings → Your apps)</span><textarea id="fb-paste" rows="3" placeholder="const firebaseConfig = { apiKey: &quot;…&quot;, … }"></textarea></label>
+    ${fld('apiKey','settings.firebase.apiKey')}${fld('authDomain','settings.firebase.authDomain')}${fld('projectId','settings.firebase.projectId')}${fld('appId','settings.firebase.appId')}
+    ${fld('Collection','settings.firebase.collection')}${fld('Document ID','settings.firebase.doc')}
+    <p class="hint">ค่าเหล่านี้เปิดเผยได้ ไม่ใช่รหัสลับ ความปลอดภัยควบคุมด้วย Firestore rules ที่ให้เฉพาะบัญชีของคุณเขียนได้ ในโหมดนี้รูปกิจกรรมต้องอัปโหลดผ่าน Cloudinary เพราะเอกสาร Firestore เก็บได้ไม่เกิน 1MB</p>`);
+}
+document.addEventListener('input',e=>{
+  if(e.target.id!=='fb-paste')return;
+  const t=e.target.value,f=data.settings.firebase;let n=0;
+  for(const k of ['apiKey','authDomain','projectId','appId']){const m=t.match(new RegExp(k+'\\s*["\']?\\s*:\\s*["\']([^"\']+)["\']'));if(m){f[k]=m[1];n++}}
+  if(n){changed(true);toast(`อ่านค่าได้ ${n} รายการ`)}
+});
+document.addEventListener('click',async e=>{
+  const b=e.target.closest('[data-act^="fb-"]');if(!b)return;const a=b.dataset.act;
+  if(a==='fb-in'){try{await fbSignIn();renderEditor();toast('เข้าสู่ระบบแล้ว')}catch(err){toast(fbMsg(err))}}
+  if(a==='fb-out'){try{await fbx?.Au.signOut(fbx.auth)}catch(_){}fbUserInfo=null;renderEditor()}
+  if(a==='fb-rules'){try{await navigator.clipboard.writeText(fbRules(fbUserInfo?.uid));toast('คัดลอก Rules แล้ว นำไปวางใน Firestore → Rules แล้วกด Publish')}catch(_){prompt('คัดลอก Rules นี้',fbRules(fbUserInfo?.uid))}}
+});
 
 /* ---------- GitHub publish (for GitHub Pages) ---------- */
 const GH_TOKEN_KEY='gh-token-v1';
@@ -741,7 +831,7 @@ function ghDefaults(){
 }
 const ghToken=()=>store.get(GH_TOKEN_KEY)||'';
 function ghReady(){const g=data.settings?.github||{};return !inRuntime&&!!(g.owner&&g.repo&&g.path&&ghToken())}
-function ghNote(){if(inRuntime)return;const n=$('#dr-note');if(n)n.textContent=ghReady()?'กดบันทึกเพื่ออัปเดตไฟล์บน GitHub ทุกคนจะเห็นภายใน 1–2 นาที':'ยังไม่ได้ตั้งค่า GitHub การบันทึกจะเก็บไว้ในเบราว์เซอร์นี้เท่านั้น ตั้งค่าในหัวข้อ “เผยแพร่ขึ้น GitHub”'}
+function ghNote(){if(inRuntime)return;const n=$('#dr-note');if(n)n.textContent=fbActive()?'กดบันทึกเพื่ออัปเดตข้อมูลบน Firebase ทุกคนเห็นข้อมูลใหม่ทันที':ghReady()?'กดบันทึกเพื่ออัปเดตไฟล์บน GitHub ทุกคนจะเห็นภายใน 1–2 นาที':'ยังไม่ได้ตั้งค่า GitHub การบันทึกจะเก็บไว้ในเบราว์เซอร์นี้เท่านั้น ตั้งค่าในหัวข้อ “เผยแพร่ขึ้น GitHub”'}
 function b64(str){const b=new TextEncoder().encode(str);let s='';for(let i=0;i<b.length;i+=0x8000)s+=String.fromCharCode.apply(null,b.subarray(i,i+0x8000));return btoa(s)}
 function ghErr(st,j){const m={401:'Token ไม่ถูกต้องหรือหมดอายุ',403:'Token ไม่มีสิทธิ์เขียน repo นี้ (ต้องเปิดสิทธิ์ Contents: Read and write)',404:'ไม่พบ repo, branch หรือไฟล์ ตรวจสอบชื่อให้ถูกต้อง',409:'ไฟล์ถูกแก้ไขพร้อมกัน ลองบันทึกอีกครั้ง',422:'ข้อมูลไม่ถูกต้อง ลองบันทึกอีกครั้ง'};return new Error(m[st]||j.message||('GitHub error '+st))}
 function ghHeaders(){return {Authorization:'Bearer '+ghToken(),Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'}}
@@ -800,6 +890,10 @@ async function save(){
       else {done('บันทึกไม่สำเร็จ ลองอีกครั้ง');return}
     }
   }
+  if(fbActive()){
+    try{await fbWrite(data);saved=clone(data);store.del(LOCAL_KEY);store.del(DRAFT_KEY);fbStatus='ok';done('บันทึกขึ้น Firebase แล้ว ทุกคนเห็นข้อมูลใหม่ทันที');setEditing(false);return}
+    catch(e){done(e.message);return}
+  }
   if(!inRuntime&&ghReady()){
     const html=buildDocument(data);
     try{await ghPublish(html);
@@ -824,8 +918,9 @@ function checkDraft(){
 
 /* ---------- Boot ---------- */
 data=normalize(data); saved=normalize(clone(saved));
-render();
 (async()=>{
+  await fbBoot();
+  render();
   const C=window.claude;
   if(C&&C.use){
     const [art,usr,dl]=await Promise.all([C.use('artifact').catch(()=>null),C.use('user').catch(()=>null),C.use('downloads').catch(()=>null)]);
